@@ -1,0 +1,26 @@
+from datetime import datetime, timedelta, date
+
+start_time = input("Введите время начала сна (в формате ЧЧ:ММ): ")
+end_time = input("Введите время окончания сна (в формате ЧЧ:ММ): ")
+
+date_today = date.today()
+
+start_hour,start_minute = map(int, start_time.split(':'))
+end_hour,end_minute = map(int, end_time.split(':'))
+
+start = datetime(date_today.year, date_today.month, date_today.day, start_hour, start_minute)
+end = datetime(date_today.year, date_today.month, date_today.day, end_hour, end_minute)
+
+if end < start:
+    end += timedelta(days=1)
+
+sleep_time = end - start
+
+sleep_hours = int(sleep_time.total_seconds() // 3600)
+sleep_minutes = int((sleep_time.total_seconds() % 3600) // 60)
+
+with open('sleep_history.txt', 'a', encoding='utf-8') as file:
+    file.write(f'Дата: {date.today()} | Заснул в {start_time} | проснулся в {end_time} | Сон: {sleep_hours} ч. {sleep_minutes} мин.\n')
+
+
+print(f'Вы спали сегодня {sleep_hours} часов и {sleep_minutes} минут')
