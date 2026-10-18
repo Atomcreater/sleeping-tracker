@@ -9,10 +9,11 @@ cursor = connection.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS sleep_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     sleep_date TEXT NOT NULL,
     sleep_start TEXT NOT NULL,
-    wake_up TEXT NOT NULL,
-    duration_minutes INTEGER NOT NULL,
+    wake_up TEXT ,
+    duration_minutes INTEGER,
     source TEXT NOT NULL DEFAULT 'manual'
 )
 """)

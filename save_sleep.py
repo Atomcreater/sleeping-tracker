@@ -1,45 +1,71 @@
-from datetime import datetime, timedelta, date
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "sleep_tracker.db"
 
-start_time = input("Введите время начала сна (в формате ЧЧ:ММ): ")
-end_time = input("Введите время окончания сна (в формате ЧЧ:ММ): ")
 
-date_today = date.today()
+def start_sleep(user_id):
+    now = datetime.now()
 
-start_hour,start_minute = map(int, start_time.split(':'))
-end_hour,end_minute = map(int, end_time.split(':'))
+    with sqlite3.connect(DB_PATH) as connection:
+        cursor = connection.cursor()
 
-start = datetime(date_today.year, date_today.month, date_today.day, start_hour, start_minute)
-end = datetime(date_today.year, date_today.month, date_today.day, end_hour, end_minute)
+        cursor.execute("""
+            SELECT id FROM sleep_records
+            WHERE user_id = ? AND wake_up IS NULL
+            LIMIT 1
+        """, (user_id,))
 
-if end < start:
-    end += timedelta(days=1)
+        if cursor.fetchone():
+            return False
 
-sleep_time = end - start
+        cursor.execute("""
+            INSERT INTO sleep_records
+            (user_id, sleep_date, sleep_start, source)
+            VALUES (?, ?, ?, ?)
+        """, (
+            user_id,
+            now.date().isoformat(),
+            now.isoformat(timespec="seconds"),
+            "telegram"
+        ))
 
-duration_minutes = int(sleep_time.total_seconds()  // 60)
-
-connection = sqlite3.connect(DB_PATH)
-cursor = connection.cursor()
+    return True
 
 
-cursor.execute(
-    """
-INSERT INTO sleep_records 
-(sleep_date, sleep_start, wake_up, duration_minutes) 
-VALUES (?, ?, ?, ?)
-    """, (
-        date_today.isoformat(),
-        start_time,
-        end_time,
-        duration_minutes
-    )
-)
+def finish_sleep(user_id):
+    now = datetime.now()
 
-connection.commit()
-connection.close()
+    with sqlite3.connect(DB_PATH) as connection:
+        cursor = connection.cursor()
 
-print('Запись о сне успешно сохранена в базу данных!')
+        cursor.execute("""
+            SELECT id, sleep_start
+            FROM sleep_records
+            WHERE user_id = ? AND wake_up IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """, (user_id,))
+
+        record = cursor.fetchone()
+
+        if record is None:
+            return None
+
+        record_id, sleep_start = record
+        start = datetime.fromisoformat(sleep_start)
+
+        duration = int((now - start).total_seconds() // 60)
+
+        cursor.execute("""
+            UPDATE sleep_records
+            SET wake_up = ?, duration_minutes = ?
+            WHERE id = ?
+        """, (
+            now.isoformat(timespec="seconds"),
+            duration,
+            record_id
+        ))
+
+    return duration

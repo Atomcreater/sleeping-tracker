@@ -8,38 +8,54 @@ def format_duration(duration_minutes):
     minutes = duration_minutes % 60
     return f"{hours} ч {minutes} мин"
 
-connection = sqlite3.connect(DB_PATH)
-cursor = connection.cursor()
+def get_sleep_statistics(user_id):
+    avg_duration = get_sleep_avg7(user_id)
+    max_duration, min_duration = get_sleep_max_min(user_id)
 
-cursor.execute("SELECT COUNT(*) FROM sleep_records")
-
-result = cursor.fetchone()
-count = result[0] if result else 0
-
-cursor.execute("SELECT AVG(duration_minutes) FROM sleep_records")
-
-result_1 = cursor.fetchone()
-avg_duration = result_1[0] if result_1 is not None else 0
+    return avg_duration, max_duration, min_duration
 
 
-cursor.execute("SELECT MAX(duration_minutes), MIN(duration_minutes) FROM sleep_records")
+def get_sleep_avg7(user_id):
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
 
-result_2 = cursor.fetchone()
-max_duration = result_2[0] if result_2[0] is not None else 0
-min_duration = result_2[1] if result_2[1] is not None else 0
+    cursor.execute("""
+        SELECT AVG(duration_minutes)
+        FROM (
+            SELECT duration_minutes
+            FROM sleep_records
+            WHERE duration_minutes > 0
+            AND user_id = ?
+            ORDER BY sleep_date DESC, id DESC
+            LIMIT 7
+        )
+    """, (user_id,))
+    result = cursor.fetchone()
+    avg_duration = result[0] if result[0] is not None else 0
+    connection.close()
+    return avg_duration
 
-cursor.execute("SELECT sleep_date, sleep_start, wake_up, duration_minutes FROM sleep_records ORDER BY sleep_date DESC, id DESC LIMIT 7")
+def get_sleep_max_min(user_id):
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
 
-records = cursor.fetchall()
+    cursor.execute("""
+        SELECT MAX(duration_minutes), MIN(duration_minutes)
+        FROM (
+            SELECT duration_minutes
+            FROM sleep_records
+            WHERE duration_minutes > 0
+            AND user_id = ?
+            ORDER BY sleep_date DESC, id DESC
+            LIMIT 7
+        )
+    """, (user_id,))
+    result = cursor.fetchone()
+    max_duration = result[0] if result[0] is not None else 0
+    min_duration = result[1] if result[1] is not None else 0
+    connection.close()
+    return max_duration, min_duration
 
-print('||История сна||')
-if records is None or len(records) == 0:
-    print("Нет записей о сне.")
-else:   
-    for record in records:
-        sleep_date, sleep_start, wake_up, duration_minutes = record
-        formatted_duration = format_duration(duration_minutes)
-        print(f"Дата: {sleep_date} | Заснул в: {sleep_start} | Проснулся в: {wake_up} | Продолжительность сна: {formatted_duration}")   
-
-connection.close()
-
+if __name__ == "__main__":
+    user_id = 123456789  # Для теста замени на свой Telegram ID
+    print(get_sleep_statistics(user_id))
