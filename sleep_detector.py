@@ -1,67 +1,107 @@
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from database import get_activity_events
+
+LOCAL_TZ = timezone(timedelta(hours=3))
+
+def normalize_datetime(value):
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=LOCAL_TZ)
+
+    return value.astimezone(LOCAL_TZ)
 
 
-def detect_sleep(activity_times):
-    """
-    Ищет самый длинный ночной промежуток
-    между событиями активности.
-    """
+def merge_sleeping_intervals(intervals, max_gap_minutes=20):
 
-    if len(activity_times) < 2:
-        return None
+    if not intervals:
+        return []
 
-    # Сортируем события по времени
-    activity_times = sorted(activity_times)
+    intervals = sorted(intervals, key=lambda item: item[0])
 
-    longest_sleep = None
-    max_duration = timedelta(0)
+    merged = []
 
-    # Проверяем каждую пару соседних событий
-    for i in range(len(activity_times) - 1):
-        start = activity_times[i]
-        end = activity_times[i + 1]
+    current_start, current_end, _ = intervals[0]
+    activity_periods = []
 
-        duration = end - start
+    for start, end, _ in intervals[1:]:
+        gap_minutes = (start - current_end).total_seconds() / 60
 
-        # Рассматриваем интервалы от 4 до 14 часов
-        if not timedelta(hours=4) <= duration <= timedelta(hours=14):
-            continue
+        if 0 <= gap_minutes <= max_gap_minutes:
+            if gap_minutes > 0:
+                activity_periods.append((current_end, start, gap_minutes))
 
-        # Интервал должен начинаться вечером или ночью
-        if not (start.hour >= 20 or start.hour <= 3):
-            continue
+            current_end = end
 
-        # Интервал должен заканчиваться утром или днём
-        if not (4 <= end.hour <= 14):
-            continue
+        else:
+            merged.append(build_sleep_result(current_start,current_end,activity_periods))
 
-        if duration > max_duration:
-            max_duration = duration
-            longest_sleep = {
-                "start": start,
-                "end": end,
-                "duration": duration,
-            }
+            current_start = start
+            current_end = end
+            activity_periods = []
 
-    return longest_sleep
+    merged.append(build_sleep_result(current_start,current_end,activity_periods))
+
+    return merged
+
+
+def build_sleep_result(start, end, activity_periods):
+    total_minutes = (end - start).total_seconds() / 60
+
+    activity_minutes = sum(period[2] for period in activity_periods)
+
+    sleep_minutes = total_minutes - activity_minutes
+
+    return {
+        "start": start,
+        "end": end,
+        "total_minutes": total_minutes,
+        "sleep_minutes": sleep_minutes,
+        "activity_minutes": activity_minutes,
+        "activity_periods": activity_periods,
+    }
+
+
+def find_sleep_intervals(events, min_hours=4, max_hours=12):
+    online_time = set()
+    sleep_intervals = []
+
+    for event_time, event_type, source in events:
+        if event_type in ("online", "activity"):
+            online_time.add(normalize_datetime(event_time))
+
+    online_time = sorted(online_time)
+
+    for start_dt, end_dt in zip(online_time, online_time[1:]):
+        duration_time = end_dt - start_dt
+        hours = duration_time.total_seconds() / 3600
+
+        if (
+            min_hours <= hours <= max_hours
+            and (20 <= start_dt.hour or start_dt.hour <= 6)
+        ):
+            sleep_intervals.append((start_dt, end_dt, hours))
+
+    return sleep_intervals
+
+
+def find_sleep_intervals_from_db(user_id):
+    events = get_activity_events(user_id)
+    sleep_intervals = find_sleep_intervals(events)
+    return sleep_intervals
+
 
 
 if __name__ == "__main__":
     activity = [
-        datetime(2026, 10, 18, 23, 30),
-        datetime(2026, 10, 18, 21, 15),
-        datetime(2026, 10, 19, 00, 30),
-        datetime(2026, 10, 19, 8, 20),
-        datetime(2026, 10, 19, 10, 10),
+        ("2026-10-19T00:30:00", "online", "telegram"),
+        ("2026-10-19T01:00:00", "online", "telegram"),
+        ("2026-10-19T08:30:00", "online", "telegram"),
+        ("2026-10-19T09:00:00", "offline", "telegram"),
+        ("2026-10-19T10:00:00", "online", "telegram"),
+        ("2026-10-19T13:00:00", "online", "telegram"),
     ]
 
-    result = detect_sleep(activity)
-
-    if result:
-        print("Предполагаемый период сна найден!")
-        print("Начало:", result["start"])
-        print("Конец:", result["end"])
-        print("Длительность:", result["duration"])
-    else:
-        print("Подходящий ночной интервал не найден.")
+    print(find_sleep_intervals(activity))

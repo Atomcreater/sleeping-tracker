@@ -15,3 +15,13 @@ venv/
 
 # macOS
 .DS_Store
+
+*.session
+*.session-journal
+sessions/
+
+# Pytest
+.pytest_cache/
+
+# Локальные настройки редактора
+.vscode/

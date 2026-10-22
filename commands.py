@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
+from keyboards import main_menu
+from aiogram import F
+from aiogram.types import CallbackQuery
+from sleep_detector import find_sleep_intervals_from_db, merge_sleeping_intervals
 
 from database import (
     start_sleep,
@@ -19,32 +23,93 @@ MONTHS = [
     "октября", "ноября", "декабря"
 ]
 
+LOCAL_TZ = timezone(timedelta(hours=3))
 
 def format_duration(duration_minutes):
     minutes_total = int(duration_minutes or 0)
     hours, minutes = divmod(minutes_total, 60)
     return f"{hours} ч {minutes} мин"
 
+
 def format_sleep_time(value):
     if not value:
         return "Не указано"
 
-    # Старый формат: 23:00
     if len(value) == 5 and ":" in value:
         return value
 
-    # Новый формат: 2026-10-18T23:00:00
     try:
-        return datetime.fromisoformat(value).strftime("%H:%M")
+        dt = datetime.fromisoformat(value)
+
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(LOCAL_TZ)
+
+        return dt.strftime("%H:%M")
+
     except ValueError:
         return str(value)
+
+
+def format_merged_sleep_result(periods):
+    if not periods:
+        return "🔎 Недостаточно данных для анализа сна."
+
+    response = (
+        "🌙 <b>Анализ сна завершён</b>\n\n"
+        f"Найдено периодов сна: <b>{len(periods)}</b>\n\n"
+    )
+
+    for number, period in enumerate(periods, start=1):
+        start = period["start"]
+        end = period["end"]
+
+        sleep_minutes = round(period["sleep_minutes"])
+        activity_minutes = round(period["activity_minutes"])
+
+        response += (
+            f"💤 <b>Период №{number}</b>\n"
+            f"🌙 Начало: {start:%d.%m.%Y %H:%M}\n"
+            f"☀️ Окончание: {end:%d.%m.%Y %H:%M}\n"
+            f"⏱ Оценка сна по активности: "
+            f"{sleep_minutes // 60} ч {sleep_minutes % 60} мин\n"
+        )
+
+        if activity_minutes > 0:
+            response += (
+                f"🌗 Ночная активность: "
+                f"{activity_minutes} мин\n"
+            )
+
+            for activity_start, activity_end, minutes in period["activity_periods"]:
+                response += (
+                    f"   • {activity_start:%H:%M}–"
+                    f"{activity_end:%H:%M} "
+                    f"({round(minutes)} мин)\n"
+                )
+
+        response += "\n"
+
+    response += (
+        "ℹ️ <i>Анализ основан только на взаимодействиях "
+        "с ботом. Отсутствие событий не подтверждает сон. "
+        "Указанное время является приблизительной оценкой.</i>"
+    )
+
+    return response
+
 
 @router.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
-        "🌙 Привет! Я Sleep Tracker.\n"
-        "Я помогу тебе отслеживать режим сна.\n\n"
-        "Напиши /help, чтобы узнать мои команды."
+        "🌙 <b>Sleep Tracker</b>\n\n"
+        "Добро пожаловать в твой трекер сна!\n\n"
+        "Здесь ты можешь:\n"
+        "💤 Отслеживать продолжительность сна\n"
+        "📅 Просматривать историю\n"
+        "📊 Анализировать статистику\n\n"
+        "Выбери действие:",
+        parse_mode="HTML",
+        reply_markup=main_menu()
     )
 
 
@@ -95,22 +160,11 @@ async def wake_command(message: Message):
         "Результат сохранён в базе данных!"
     )
 
-
-@router.message(Command("history"))
-async def history_command(message: Message):
-    print("DEBUG 1: Команда /history получена")
-
-    user_id = message.from_user.id
-    records = get_sleep_history(user_id)
-
-    print(f"DEBUG 2: Найдено записей: {len(records)}")
-    print(f"DEBUG 3: Данные: {records}")
-
+def format_sleep_history(records):
     if not records:
-        await message.answer("У тебя нет завершённых записей о сне.")
-        return
+        return "У тебя нет завершённых записей о сне."
 
-    response = "🌙 История сна:\n\n"
+    response = "🌙 <b>История сна</b>\n\n"
 
     for sleep_date, sleep_start, wake_up, duration in records:
         date_obj = datetime.fromisoformat(sleep_date)
@@ -121,38 +175,157 @@ async def history_command(message: Message):
             f"{date_obj.year} года"
         )
 
-        formatted_start = format_sleep_time(sleep_start)
-        formatted_wake_up = format_sleep_time(wake_up)
-       
-
         response += (
             f"📅 Дата: <b>{formatted_date}</b>\n"
-            f"🌙 Заснул в: <b>{formatted_start}</b>\n"
-            f"☀️ Проснулся в: <b>{formatted_wake_up}</b>\n"
-            f"⏱ Продолжительность сна: "
+            f"🌙 Заснул в: <b>{format_sleep_time(sleep_start)}</b>\n"
+            f"☀️ Проснулся в: <b>{format_sleep_time(wake_up)}</b>\n"
+            f"⏱ Продолжительность: "
             f"<b>{format_duration(duration)}</b>\n\n"
         )
-    print("DEBUG 4: Сообщение сформировано")
-    print(response)
 
-    await message.answer(response, parse_mode="HTML")
+    return response
 
+
+@router.message(Command("history"))
+async def history_command(message: Message):
+    records = get_sleep_history(message.from_user.id)
+
+    await message.answer(
+        format_sleep_history(records),
+        parse_mode="HTML"
+    )
+
+def format_sleep_statistics(avg, maximum, minimum):
+    return (
+        "📊 <b>Статистика сна</b>\n\n"
+        "За последние 7 завершённых записей:\n\n"
+        f"💤 Средняя продолжительность: "
+        f"<b>{format_duration(round(avg))}</b>\n"
+        f"🌙 Самый долгий сон: "
+        f"<b>{format_duration(maximum)}</b>\n"
+        f"⏰ Самый короткий сон: "
+        f"<b>{format_duration(minimum)}</b>"
+    )
 
 @router.message(Command("stats"))
 async def stats_command(message: Message):
-    user_id = message.from_user.id
+    statistics = get_sleep_statistics(message.from_user.id)
 
-    avg, maximum, minimum = get_sleep_statistics(user_id)
-
-    response = (
-        "📊 Статистика сна\n\n"
-        "За последние 7 завершённых записей:\n\n"
-        f"💤 Средняя продолжительность: "
-        f"{format_duration(round(avg))}\n"
-        f"🌙 Самый долгий сон: "
-        f"{format_duration(maximum)}\n"
-        f"⏰ Самый короткий сон: "
-        f"{format_duration(minimum)}"
+    await message.answer(
+        format_sleep_statistics(*statistics),
+        parse_mode="HTML"
     )
 
-    await message.answer(response)
+@router.message(Command("detect"))
+async def detect_command(message: Message):
+    user_id = message.from_user.id
+
+    intervals = find_sleep_intervals_from_db(user_id)
+    merged_intervals = merge_sleeping_intervals(intervals)
+
+    response = format_merged_sleep_result(merged_intervals)
+    await message.answer(response, parse_mode="HTML")
+
+@router.message(Command("detect_test"))
+async def detect_test_command(message: Message):
+    TEST_USER_ID = 999999999
+
+    intervals = find_sleep_intervals_from_db(TEST_USER_ID)
+    merged_intervals = merge_sleeping_intervals(intervals)
+
+    response = format_merged_sleep_result(merged_intervals)
+
+    await message.answer(
+        "🧪 <b>Тестовый режим</b>\n\n" + response,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "sleep")
+async def sleep_button(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    if start_sleep(user_id):
+        text = (
+            "🌙 <b>Сон начат!</b>\n\n"
+            "Время начала сохранено.\n"
+            "Когда проснёшься, нажми «Проснулся»."
+        )
+    else:
+        text = "😴 У тебя уже есть активная запись сна."
+
+    await callback.answer()
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+
+@router.callback_query(F.data == "wake")
+async def wake_button(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    duration = finish_sleep(user_id)
+
+    if duration is None:
+        text = "У тебя нет активной записи сна."
+    else:
+        text = (
+            "☀️ <b>Доброе утро!</b>\n\n"
+            f"Ты спал {format_duration(duration)}.\n"
+            "Результат сохранён!"
+        )
+
+    await callback.answer()
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+
+@router.callback_query(F.data == "history")
+async def history_button(callback: CallbackQuery):
+    records = get_sleep_history(callback.from_user.id)
+
+    await callback.answer()
+    await callback.message.answer(
+        format_sleep_history(records),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "stats")
+async def stats_button(callback: CallbackQuery):
+    statistics = get_sleep_statistics(callback.from_user.id)
+
+    await callback.answer()
+    await callback.message.answer(
+        format_sleep_statistics(*statistics),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "detect")
+async def detect_button(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    intervals = find_sleep_intervals_from_db(user_id)
+    merged_intervals = merge_sleeping_intervals(intervals)
+
+    response = format_merged_sleep_result(merged_intervals)
+
+    await callback.answer()
+    await callback.message.answer(
+        response,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "settings")
+async def settings_button(callback: CallbackQuery):
+    await callback.answer(
+        "⚙️ Настройки появятся в следующих обновлениях!",
+        show_alert=True
+    )
+
