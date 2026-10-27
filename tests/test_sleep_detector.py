@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
-
-from sleep_detector import (
+from app.services.sleep_detector import (
     find_sleep_intervals,
     merge_sleeping_intervals,
 )
@@ -40,9 +39,13 @@ def test_short_interval():
         (datetime(2026, 10, 21, 1, 0, tzinfo=TZ), "activity", "test"),
     ]
 
-    intervals = find_sleep_intervals(events)
+    # Находим возможные промежутки сна
+    intervals = find_sleep_intervals(events, min_hours=0)
 
-    assert intervals == []
+    # Проверяем итоговую продолжительность после объединения
+    merged = merge_sleeping_intervals(intervals)
+
+    assert merged == []
 
 
 def test_duplicate_events():
@@ -100,3 +103,24 @@ def test_minimum_sleep_duration():
 
     assert len(intervals) == 1
     assert intervals[0][2] == 4
+
+def test_night_awaking():
+    """Проверяем объединение сна с коротким ночным пробуждением."""
+    events = [
+        ("2026-10-25T23:30:00+03:00", "offline", "iphone"),
+        ("2026-10-26T03:00:00+03:00", "online", "iphone"),
+        ("2026-10-26T03:10:00+03:00", "offline", "iphone"),
+        ("2026-10-26T08:00:00+03:00", "online", "iphone"),
+    ]
+
+    intervals = find_sleep_intervals(events, min_hours=0)
+    results = merge_sleeping_intervals(intervals)
+
+    assert len(results) == 1
+
+    sleep = results[0]
+
+    assert sleep["total_minutes"] == 510
+    assert sleep["sleep_minutes"] == 500
+    assert sleep["activity_minutes"] == 10
+    assert len(sleep["activity_periods"]) == 1

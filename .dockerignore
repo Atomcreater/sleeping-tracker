@@ -1,0 +1,38 @@
+# Виртуальное окружение Python
+.venv/
+venv/
+
+# Кеш Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# Настройки редактора
+.vscode/
+.idea/
+
+# Секреты
+.env
+.env.*
+
+# Базы данных
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Тесты
+tests/
+
+# Вспомогательные файлы
+scripts/
+
+# Документация
+README.md
+
+# Системные файлы macOS
+.DS_Store

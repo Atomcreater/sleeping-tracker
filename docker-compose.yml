@@ -1,0 +1,32 @@
+services:
+  bot:
+    build: .
+    container_name: sleep-tracker-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/app/data
+
+    command: python -m app.bot.main
+
+  api:
+    build: .
+    container_name: sleep-tracker-api
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/app/data
+
+    ports:
+      - "8000:8000"
+
+    command: >
+      uvicorn app.api.main:app
+      --host 0.0.0.0
+      --port 8000

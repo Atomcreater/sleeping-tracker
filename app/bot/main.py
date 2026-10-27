@@ -4,11 +4,8 @@ import os
 
 from aiogram import Bot, Dispatcher
 from dotenv import load_dotenv
-
-from activity_middleware import ActivityMiddleware
-from commands import router
-from database import init_db
-
+from app.bot.commands import router
+from app.db.schema import init_db
 
 async def main():
     # Загружаем переменные окружения
@@ -25,12 +22,6 @@ async def main():
     # Создаём Telegram-бота
     bot = Bot(token=token)
     dp = Dispatcher()
-
-    # Регистрируем активность пользователя
-    activity_middleware = ActivityMiddleware()
-
-    dp.message.outer_middleware(activity_middleware)
-    dp.callback_query.outer_middleware(activity_middleware)
 
     # Подключаем обработчики команд
     dp.include_router(router)

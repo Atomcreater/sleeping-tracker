@@ -2,16 +2,19 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from keyboards import main_menu
+from app.bot.keyboards import main_menu
 from aiogram import F
 from aiogram.types import CallbackQuery
-from sleep_detector import find_sleep_intervals_from_db, merge_sleeping_intervals
+from app.services.sleep_detector import find_sleep_intervals_from_db, merge_sleeping_intervals
 
-from database import (
+from app.db.sleep import (
     start_sleep,
     finish_sleep,
     get_sleep_history,
     get_sleep_statistics,
+    save_detected_sleep,
+    get_pending_sleep, 
+    confirm_detected_sleep
 )
 
 router = Router()
@@ -90,9 +93,11 @@ def format_merged_sleep_result(periods):
         response += "\n"
 
     response += (
-        "ℹ️ <i>Анализ основан только на взаимодействиях "
-        "с ботом. Отсутствие событий не подтверждает сон. "
-        "Указанное время является приблизительной оценкой.</i>"
+        "ℹ️ <i>Анализ основан на событиях активности, "
+        "с iPhone. Взаимодействия с Telegram-ботом "
+        "не учитываются. "
+        "Отсутствие событий не подтверждает сон. "
+        "Время указано приблизительно.</i>"
     )
 
     return response
@@ -223,6 +228,8 @@ async def detect_command(message: Message):
     intervals = find_sleep_intervals_from_db(user_id)
     merged_intervals = merge_sleeping_intervals(intervals)
 
+    save_detected_sleep(user_id, merged_intervals)
+
     response = format_merged_sleep_result(merged_intervals)
     await message.answer(response, parse_mode="HTML")
 
@@ -230,7 +237,7 @@ async def detect_command(message: Message):
 async def detect_test_command(message: Message):
     TEST_USER_ID = 999999999
 
-    intervals = find_sleep_intervals_from_db(TEST_USER_ID)
+    intervals = find_sleep_intervals_from_db(TEST_USER_ID, source="test")
     merged_intervals = merge_sleeping_intervals(intervals)
 
     response = format_merged_sleep_result(merged_intervals)
@@ -313,6 +320,8 @@ async def detect_button(callback: CallbackQuery):
     intervals = find_sleep_intervals_from_db(user_id)
     merged_intervals = merge_sleeping_intervals(intervals)
 
+    save_detected_sleep(user_id, merged_intervals)
+
     response = format_merged_sleep_result(merged_intervals)
 
     await callback.answer()
@@ -329,3 +338,105 @@ async def settings_button(callback: CallbackQuery):
         show_alert=True
     )
 
+@router.message(Command("review"))
+async def review_command(message: Message):
+    records = get_pending_sleep(message.from_user.id)
+
+    if not records:
+        await message.answer(
+            "Нет оценок, ожидающих подтверждения.\n"
+            "Для нового анализа отправь /detect."
+        )
+        return
+
+    lines = ["🌙 Оценки сна для проверки:\n"]
+
+    for record_id, start, end, minutes, awake in records:
+        start_dt = datetime.fromisoformat(start).astimezone(LOCAL_TZ)
+        end_dt = datetime.fromisoformat(end).astimezone(LOCAL_TZ)
+
+        lines.append(
+            f"ID {record_id}\n"
+            f"{start_dt:%d.%m.%Y %H:%M} → "
+            f"{end_dt:%d.%m.%Y %H:%M}\n"
+            f"Оценка сна: {format_duration(minutes)}\n"
+            f"Активность: {awake} мин\n"
+            f"Подтвердить: /confirm {record_id}\n"
+        )
+
+    lines.append(
+        "Время указано по Москве (+03:00).\n"
+        "Подтверждай только периоды, когда действительно спал.\n\n"
+        "Для исправления:\n"
+        "/correct ID ГГГГ-ММ-ДД ЧЧ:ММ ГГГГ-ММ-ДД ЧЧ:ММ минуты\n"
+        "Последнее число — суммарные минуты бодрствования."
+    )
+
+    await message.answer("\n".join(lines), parse_mode=None)
+
+
+@router.message(Command("confirm"))
+async def confirm_command(message: Message):
+    parts = message.text.split()
+
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer(
+            "Укажи ID оценки, например: /confirm 2\n"
+            "Посмотреть оценки: /review"
+        )
+        return
+
+    result = confirm_detected_sleep(
+        message.from_user.id,
+        int(parts[1]),
+    )
+    await message.answer(result)
+
+
+@router.message(Command("correct"))
+async def correct_command(message: Message):
+    parts = message.text.split()
+
+    if len(parts) != 7:
+        await message.answer(
+            "Формат:\n"
+            "/correct ID дата_начала время_начала "
+            "дата_конца время_конца минуты_бодрствования\n\n"
+            "Пример:\n"
+            "/correct 2 2026-10-25 23:30 2026-10-26 07:00 10\n\n"
+            "Время — московское (+03:00). "
+            "Команда сразу сохраняет исправленный сон в историю."
+        )
+        return
+
+    try:
+        detected_id = int(parts[1])
+
+        start = datetime.strptime(
+            f"{parts[2]} {parts[3]}",
+            "%Y-%m-%d %H:%M",
+        ).replace(tzinfo=LOCAL_TZ)
+
+        end = datetime.strptime(
+            f"{parts[4]} {parts[5]}",
+            "%Y-%m-%d %H:%M",
+        ).replace(tzinfo=LOCAL_TZ)
+
+        awake_minutes = int(parts[6])
+    except ValueError:
+        await message.answer(
+            "Проверь ввод: ID и минуты — целые числа, "
+            "даты — ГГГГ-ММ-ДД, время — ЧЧ:ММ."
+        )
+        return
+
+    result = confirm_detected_sleep(
+        message.from_user.id,
+        detected_id,
+        corrected=(
+            start.isoformat(),
+            end.isoformat(),
+            awake_minutes,
+        ),
+    )
+    await message.answer(result)

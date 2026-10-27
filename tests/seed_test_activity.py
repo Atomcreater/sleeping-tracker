@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
-
-from database import init_db, get_connection, save_activity_event
+from app.db.schema import init_db
+from app.db.connection import get_connection
+from app.db.activity import save_activity_event
 
 TEST_USER_ID = 999999999
 TEST_SOURCE = "test"
