@@ -2,8 +2,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.keyboards import sleep_review_keyboard
 from app.db.connection import get_connection
 
 
@@ -11,18 +11,7 @@ LOCAL_TZ = timezone(timedelta(hours=3))
 
 
 def get_notification_keyboard(detected_id: int):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text="✅ Подтвердить",
-                callback_data=f"confirm_sleep:{detected_id}",
-            ),
-            InlineKeyboardButton(
-                text="✏️ Исправить",
-                callback_data=f"correct_sleep:{detected_id}",
-            ),
-        ]]
-    )
+    return sleep_review_keyboard(detected_id)
 
 
 def register_sleep_notifications(user_id: int, detected_ids: list[int]):
@@ -165,11 +154,20 @@ async def send_pending_sleep_notifications(bot: Bot, user_id: int):
                 reply_markup=get_notification_keyboard(detected_id),
             )
 
-            update_notification_status(
-                notification_id,
-                "sent",
-                message_id=message.message_id,
-            )
+            try:
+                update_notification_status(
+                    notification_id,
+                    "sent",
+                    message_id=message.message_id,
+                )
+            except Exception:
+                logging.exception(
+                    "Сообщение Telegram отправлено, но статус уведомления %s "
+                    "не удалось сохранить. Telegram message_id=%s",
+                    notification_id,
+                    message.message_id,
+                )
+                return
 
             logging.info(
                 "Уведомление о сне %s отправлено",

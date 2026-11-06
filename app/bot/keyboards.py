@@ -44,11 +44,11 @@ def sleep_review_keyboard(record_id: int):
             [
                 InlineKeyboardButton(
                     text="✅ Подтвердить",
-                    callback_data=f"sleep_confirm:{record_id}"
+                    callback_data=f"confirm_sleep:{record_id}"
                 ),
                 InlineKeyboardButton(
                     text="✏️ Исправить",
-                    callback_data=f"sleep_correct:{record_id}"
+                    callback_data=f"correct_sleep:{record_id}"
                 )
             ]
         ]

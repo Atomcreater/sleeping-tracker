@@ -32,22 +32,6 @@ class SleepCorrection(StatesGroup):
     choosing_part = State()
     waiting_for_value = State()
 
-def sleep_review_keyboard(detected_id: int):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Подтвердить",
-                    callback_data=f"confirm_sleep:{detected_id}"
-                ),
-                InlineKeyboardButton(
-                    text="✏️ Исправить",
-                    callback_data=f"correct_sleep:{detected_id}"
-                )
-            ]
-        ]
-    )
-
 MONTHS = [
     "января", "февраля", "марта",
     "апреля", "мая", "июня",
