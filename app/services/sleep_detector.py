@@ -108,13 +108,11 @@ def find_sleep_intervals(events, min_hours=4, max_hours=12):
         if next_type not in ("online", "activity"):
             continue
 
-        # Для iPhone отсчитываем отсутствие активности от закрытия.
-        # Для прежних источников сохраняем оценку между событиями.
+        # Сон может начинаться после закрытия приложения.
         starts_after_close = event_type == "offline"
-        starts_after_activity = (
-            source != "iphone"
-            and event_type in ("online", "activity")
-        )
+
+        # Или после последней зафиксированной активности.
+        starts_after_activity = event_type in ("online", "activity")
 
         if not (starts_after_close or starts_after_activity):
             continue

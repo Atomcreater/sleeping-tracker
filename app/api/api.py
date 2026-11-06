@@ -14,6 +14,13 @@ from app.db.sleep import save_detected_sleep
 load_dotenv()
 
 app = FastAPI()
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "service": "Sleep Tracker API"
+    }
+
 API_TOKEN = os.getenv("ACTIVITY_API_TOKEN")
 
 

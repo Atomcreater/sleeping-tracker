@@ -1,10 +1,16 @@
 from datetime import datetime, timedelta, timezone
 from aiogram import Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from app.bot.keyboards import main_menu
+from app.bot.keyboards import main_menu, sleep_review_keyboard
 from aiogram import F
-from aiogram.types import CallbackQuery
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from app.services.sleep_detector import find_sleep_intervals_from_db, merge_sleeping_intervals
 
 from app.db.sleep import (
@@ -13,11 +19,34 @@ from app.db.sleep import (
     get_sleep_history,
     get_sleep_statistics,
     save_detected_sleep,
-    get_pending_sleep, 
-    confirm_detected_sleep
+    get_pending_sleep,
+    confirm_detected_sleep,
+    get_detected_sleep_by_id,
+    find_sleep_overlaps
 )
 
 router = Router()
+
+class SleepCorrection(StatesGroup):
+    choosing_field = State()
+    choosing_part = State()
+    waiting_for_value = State()
+
+def sleep_review_keyboard(detected_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data=f"confirm_sleep:{detected_id}"
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Исправить",
+                    callback_data=f"correct_sleep:{detected_id}"
+                )
+            ]
+        ]
+    )
 
 MONTHS = [
     "января", "февраля", "марта",
@@ -340,39 +369,40 @@ async def settings_button(callback: CallbackQuery):
 
 @router.message(Command("review"))
 async def review_command(message: Message):
-    records = get_pending_sleep(message.from_user.id)
+    user_id = message.from_user.id
+
+    records = get_pending_sleep(user_id)
 
     if not records:
         await message.answer(
-            "Нет оценок, ожидающих подтверждения.\n"
+            "🌙 Нет оценок сна, ожидающих подтверждения.\n\n"
             "Для нового анализа отправь /detect."
         )
         return
 
-    lines = ["🌙 Оценки сна для проверки:\n"]
+    await message.answer(
+        f"🌙 Найдено {len(records)} оценок сна для проверки."
+    )
 
     for record_id, start, end, minutes, awake in records:
         start_dt = datetime.fromisoformat(start).astimezone(LOCAL_TZ)
         end_dt = datetime.fromisoformat(end).astimezone(LOCAL_TZ)
 
-        lines.append(
-            f"ID {record_id}\n"
-            f"{start_dt:%d.%m.%Y %H:%M} → "
-            f"{end_dt:%d.%m.%Y %H:%M}\n"
-            f"Оценка сна: {format_duration(minutes)}\n"
-            f"Активность: {awake} мин\n"
-            f"Подтвердить: /confirm {record_id}\n"
+        text = (
+            f"🌙 <b>Предполагаемый сон №{record_id}</b>\n\n"
+            f"📅 Дата: {start_dt:%d.%m.%Y}\n"
+            f"💤 Заснул: {start_dt:%H:%M}\n"
+            f"☀️ Проснулся: {end_dt:%H:%M}\n"
+            f"⏱ Продолжительность: {format_duration(minutes)}\n"
+            f"🌗 Активность: {awake} мин\n\n"
+            "Всё правильно?"
         )
 
-    lines.append(
-        "Время указано по Москве (+03:00).\n"
-        "Подтверждай только периоды, когда действительно спал.\n\n"
-        "Для исправления:\n"
-        "/correct ID ГГГГ-ММ-ДД ЧЧ:ММ ГГГГ-ММ-ДД ЧЧ:ММ минуты\n"
-        "Последнее число — суммарные минуты бодрствования."
-    )
-
-    await message.answer("\n".join(lines), parse_mode=None)
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=sleep_review_keyboard(record_id)
+        )
 
 
 @router.message(Command("confirm"))
@@ -440,3 +470,458 @@ async def correct_command(message: Message):
         ),
     )
     await message.answer(result)
+
+@router.callback_query(F.data.startswith("correct_sleep:"))
+async def correct_sleep_button(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    try:
+        detected_id = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный ID записи.",
+            show_alert=True
+        )
+        return
+
+     # Получаем исходный интервал из PostgreSQL
+    record = get_detected_sleep_by_id(
+        callback.from_user.id,
+        detected_id
+    )
+
+    if record is None:
+        await callback.answer(
+            "Запись сна не найдена.",
+            show_alert=True
+        )
+        return
+
+    sleep_start, sleep_end, awake_minutes = record
+
+    # Приводим даты к московскому времени
+    start_dt = datetime.fromisoformat(
+        str(sleep_start)
+    ).astimezone(LOCAL_TZ)
+
+    end_dt = datetime.fromisoformat(
+        str(sleep_end)
+    ).astimezone(LOCAL_TZ)
+
+    await state.update_data(
+        detected_id=detected_id,
+        sleep_start=start_dt.isoformat(),
+        sleep_end=end_dt.isoformat(),
+        awake_minutes=awake_minutes
+    )
+
+    # Переходим в состояние выбора поля
+    await state.set_state(SleepCorrection.choosing_field)
+
+    await callback.answer()
+
+    await callback.message.answer(
+        "✏️ <b>Редактирование сна</b>\n\n"
+        "Что будем исправлять?",
+        parse_mode="HTML",
+        reply_markup=correction_menu_keyboard()
+    )
+
+@router.callback_query(
+    SleepCorrection.choosing_field,
+    F.data.in_({"edit_sleep:start", "edit_sleep:end"})
+)
+async def choose_sleep_field(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    # Определяем, что пользователь хочет исправить
+    field = callback.data.split(":")[1]
+
+    # Запоминаем выбор
+    await state.update_data(edit_field=field)
+
+    # Переходим к выбору даты или времени
+    await state.set_state(SleepCorrection.choosing_part)
+
+    await callback.answer()
+
+    if field == "start":
+        text = "🌙 Редактирование времени засыпания"
+    else:
+        text = "☀️ Редактирование времени пробуждения"
+
+    await callback.message.answer(
+        f"<b>{text}</b>\n\n"
+        "Что будем изменять?",
+        parse_mode="HTML",
+        reply_markup=correction_part_keyboard()
+    )
+
+@router.callback_query(
+    SleepCorrection.choosing_part,
+    F.data.in_({"edit_part:date", "edit_part:time"})
+)
+async def choose_sleep_part(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    # Получаем выбранную часть
+    part = callback.data.split(":")[1]
+
+    # Запоминаем, что пользователь хочет изменить
+    await state.update_data(edit_part=part)
+
+    # Переходим в режим ожидания сообщения
+    await state.set_state(SleepCorrection.waiting_for_value)
+
+    await callback.answer()
+
+    if part == "date":
+        text = (
+            "📅 <b>Изменение даты</b>\n\n"
+            "Введи новую дату в формате:\n"
+            "<code>2026-10-19</code>"
+        )
+    else:
+        text = (
+            "🕐 <b>Изменение времени</b>\n\n"
+            "Введи новое время в формате:\n"
+            "<code>08:30</code>"
+        )
+
+    await callback.message.answer(
+        text,
+        parse_mode="HTML"
+    )
+
+@router.message(SleepCorrection.waiting_for_value, F.text)
+async def process_sleep_value(
+    message: Message,
+    state: FSMContext
+):
+    data = await state.get_data()
+
+    field = data["edit_field"]
+    part = data["edit_part"]
+
+    # Определяем, какой интервал редактируем
+    key = "sleep_start" if field == "start" else "sleep_end"
+
+    # Получаем исходную дату и время
+    current_dt = datetime.fromisoformat(data[key])
+
+    value = message.text.strip()
+
+    try:
+        if part == "date":
+            # Проверяем формат даты
+            new_date = datetime.strptime(value, "%Y-%m-%d").date()
+
+            # Меняем только дату
+            new_dt = current_dt.replace(
+                year=new_date.year,
+                month=new_date.month,
+                day=new_date.day
+            )
+
+        else:
+            # Проверяем формат времени
+            new_time = datetime.strptime(value, "%H:%M").time()
+
+            # Меняем только часы и минуты
+            new_dt = current_dt.replace(
+                hour=new_time.hour,
+                minute=new_time.minute,
+                second=0,
+                microsecond=0
+            )
+
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат.\n\n"
+            "Для даты используй: 2026-10-19\n"
+            "Для времени: 08:30"
+        )
+        return
+
+    # Формируем предполагаемый интервал
+    start_dt = (
+        new_dt
+        if field == "start"
+        else datetime.fromisoformat(data["sleep_start"])
+    )
+
+    end_dt = (
+        new_dt
+        if field == "end"
+        else datetime.fromisoformat(data["sleep_end"])
+    )
+
+    # Проверяем порядок дат до сохранения
+    if end_dt <= start_dt:
+        await message.answer(
+            "⚠️ Время пробуждения должно быть позже "
+            "времени засыпания.\n\n"
+            "Попробуй ввести другое значение."
+        )
+        return
+
+    # Сохраняем только корректное изменение
+    await state.update_data(**{
+        key: new_dt.isoformat()
+    })
+
+    if end_dt <= start_dt:
+        await message.answer(
+            "⚠️ Время пробуждения должно быть позже "
+            "времени засыпания.\n\n"
+            "Измени дату или время ещё раз."
+        )
+        return
+
+    duration_minutes = int(
+        (end_dt - start_dt).total_seconds() // 60
+    )
+
+    # Возвращаемся в главное меню редактирования
+    await state.set_state(SleepCorrection.choosing_field)
+
+    await message.answer(
+        "✅ <b>Изменение принято!</b>\n\n"
+        f"🌙 Заснул: {start_dt:%d.%m.%Y %H:%M}\n"
+        f"☀️ Проснулся: {end_dt:%d.%m.%Y %H:%M}\n"
+        f"⏱ Продолжительность: "
+        f"{format_duration(duration_minutes)}\n\n"
+        "Что будем делать дальше?",
+        parse_mode="HTML",
+        reply_markup=correction_menu_keyboard()
+    )
+
+@router.callback_query(
+    SleepCorrection.choosing_part,
+    F.data == "edit_part:back"
+)
+async def back_to_correction_menu(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    await state.set_state(SleepCorrection.choosing_field)
+
+    await callback.answer()
+
+    await callback.message.answer(
+        "✏️ <b>Редактирование сна</b>\n\n"
+        "Что будем исправлять?",
+        parse_mode="HTML",
+        reply_markup=correction_menu_keyboard()
+    )
+
+@router.callback_query(
+    SleepCorrection.choosing_field,
+    F.data == "edit_sleep:cancel"
+)
+async def cancel_sleep_correction(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    await state.clear()
+
+    await callback.answer("Редактирование отменено")
+
+    await callback.message.answer(
+        "❌ Редактирование сна отменено.\n\n"
+        "Изменения не сохранены."
+    )
+
+@router.callback_query(
+    SleepCorrection.choosing_field,
+    F.data == "edit_sleep:save"
+)
+async def save_sleep_correction(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    data = await state.get_data()
+
+    detected_id = data.get("detected_id")
+    sleep_start = data.get("sleep_start")
+    sleep_end = data.get("sleep_end")
+    awake_minutes = data.get("awake_minutes", 0)
+
+    if detected_id is None or not sleep_start or not sleep_end:
+        await callback.answer(
+            "Данные редактирования не найдены.",
+            show_alert=True
+        )
+        return
+
+    # Проверяем интервал перед сохранением
+    start_dt = datetime.fromisoformat(sleep_start)
+    end_dt = datetime.fromisoformat(sleep_end)
+
+    if end_dt <= start_dt:
+        await callback.answer(
+            "Некорректный интервал сна.",
+            show_alert=True
+        )
+        return
+
+    # Ищем пересечения с существующими записями
+    overlaps = find_sleep_overlaps(
+        user_id=callback.from_user.id,
+        new_start=sleep_start,
+        new_end=sleep_end
+    )
+
+    if overlaps:
+        text = (
+            "⚠️ <b>Обнаружено пересечение интервалов сна!</b>\n\n"
+            "🌙 <b>Ты пытаешься сохранить:</b>\n"
+            f"{start_dt:%d.%m.%Y %H:%M} → "
+            f"{end_dt:%d.%m.%Y %H:%M}\n\n"
+            "📋 <b>Конфликтующие записи:</b>\n"
+        )
+
+        for record in overlaps[:5]:
+            old_start = record["start"]
+            old_end = record["end"]
+
+            end_text = (
+                old_end.strftime("%d.%m.%Y %H:%M")
+                if old_end is not None
+                else "Сон не завершён"
+            )
+
+            text += (
+                f"\n<b>Запись №{record['id']}</b>\n"
+                f"🌙 {old_start:%d.%m.%Y %H:%M}\n"
+                f"☀️ {end_text}\n"
+            )
+
+        if len(overlaps) > 5:
+            text += f"\nИ ещё пересечений: {len(overlaps) - 5}\n"
+
+        text += (
+            "\nИзмени время сна или отмени редактирование."
+        )
+
+        await callback.answer()
+
+        await callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=correction_menu_keyboard()
+        )
+        return
+
+    await callback.answer("Сохраняем изменения...")
+
+    # Передаём исправленный интервал существующей функции
+    result = confirm_detected_sleep(
+        user_id=callback.from_user.id,
+        detected_id=detected_id,
+        corrected=(
+            sleep_start,
+            sleep_end,
+            awake_minutes
+        )
+    )
+
+    await callback.message.answer(result)
+
+    # Завершаем редактирование только при успешном сохранении
+    if result.startswith("Сон сохранён:"):
+        await state.clear()
+
+@router.callback_query(F.data.startswith("confirm_sleep:"))
+async def confirm_sleep_button(callback: CallbackQuery):
+    print(f"🔘 Нажата кнопка: {callback.data}", flush=True)
+
+    try:
+        detected_id = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный ID записи.",
+            show_alert=True
+        )
+        return
+
+    result = confirm_detected_sleep(
+        callback.from_user.id,
+        detected_id
+    )
+
+    await callback.answer()
+
+    if result.startswith("Сон сохранён:"):
+        await callback.message.edit_reply_markup(
+            reply_markup=None
+        )
+
+    await callback.message.answer(
+        f"🌙 {result}"
+    )
+
+@router.callback_query()
+async def debug_callback(callback: CallbackQuery):
+    print(
+        f"DEBUG CALLBACK: {callback.data}",
+        flush=True
+    )
+
+    await callback.answer(
+        f"Получено: {callback.data}",
+        show_alert=True
+    )
+
+def correction_menu_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌙 Засыпание",
+                    callback_data="edit_sleep:start"
+                ),
+                InlineKeyboardButton(
+                    text="☀️ Пробуждение",
+                    callback_data="edit_sleep:end"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💾 Сохранить",
+                    callback_data="edit_sleep:save"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="edit_sleep:cancel"
+                )
+            ]
+        ]
+    )
+
+def correction_part_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📅 Дата",
+                    callback_data="edit_part:date"
+                ),
+                InlineKeyboardButton(
+                    text="🕐 Время",
+                    callback_data="edit_part:time"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="edit_part:back"
+                )
+            ]
+        ]
+    )

@@ -4,3 +4,4 @@ Telethon==1.45.0
 pytest
 fastapi
 uvicorn
+psycopg[binary]

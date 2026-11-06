@@ -37,3 +37,19 @@ def main_menu():
             ]
         ]
     )
+
+def sleep_review_keyboard(record_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data=f"sleep_confirm:{record_id}"
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Исправить",
+                    callback_data=f"sleep_correct:{record_id}"
+                )
+            ]
+        ]
+    )

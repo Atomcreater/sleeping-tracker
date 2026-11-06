@@ -1,19 +1,21 @@
-import sqlite3
-from pathlib import Path
+import os
 
+import psycopg
+from dotenv import load_dotenv
 
-# Корневая директория проекта
-BASE_DIR = Path(__file__).resolve().parents[2]
-
-# Путь к базе данных
-DB_PATH = BASE_DIR / "data" / "sleep_tracker.db"
+load_dotenv()
 
 
 def get_connection():
-    """Создаёт подключение к базе данных SQLite."""
+    """
+    Создаёт подключение к PostgreSQL.
+    """
 
-    # Создаём папку для базы данных, если она отсутствует
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    database_url = os.getenv("DATABASE_URL")
 
-    # Открываем подключение к базе данных
-    return sqlite3.connect(DB_PATH, timeout=10)
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL не найден в переменных окружения"
+        )
+
+    return psycopg.connect(database_url)
